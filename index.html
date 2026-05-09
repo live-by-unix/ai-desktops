@@ -2,30 +2,37 @@
 <html>
 <head>
     <title>AI.exe</title>
-    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #0f172a; color: white; text-align: center; padding: 20px; margin: 0; }
-        #container { max-width: 400px; margin: 20px auto; background: #1e293b; padding: 25px; border-radius: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        :root { --bg: #0f172a; --card: #1e293b; --accent: #38bdf8; --text: #f1f5f9; }
+        body { font-family: sans-serif; background: var(--bg); color: var(--text); text-align: center; padding: 20px; margin: 0; }
+        #container { max-width: 400px; margin: 20px auto; background: var(--card); padding: 25px; border-radius: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         #view-window { width: 300px; height: 300px; margin: 0 auto 20px; background: #000; border-radius: 12px; overflow: hidden; position: relative; border: 2px solid #334155; }
         canvas, #img-preview { width: 100%; height: 100%; object-fit: cover; position: absolute; top: 0; left: 0; }
         #img-preview { display: none; z-index: 10; }
-        .btn-group { display: flex; flex-direction: column; gap: 10px; align-items: center; }
-        button, .label-btn { background: #38bdf8; color: #0f172a; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; transition: 0.2s; }
-        button:hover { background: #7dd3fc; }
+        
+        #processing-box { width: 100%; background: #334155; height: 4px; margin-bottom: 20px; border-radius: 2px; overflow: hidden; display: none; }
+        #processing-bar { width: 30%; height: 100%; background: var(--accent); animation: shift 1s infinite linear; }
+        @keyframes shift { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+
+        .btn-group { display: flex; flex-direction: column; gap: 10px; }
+        button, .label-btn { background: var(--accent); color: var(--bg); border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; }
         input[type="file"] { display: none; }
         .result-bar { text-align: left; margin-top: 15px; }
         .bar-bg { background: #334155; height: 10px; border-radius: 5px; width: 100%; overflow: hidden; margin-top: 4px; }
-        .bar-fill { background: #38bdf8; height: 100%; width: 0%; transition: 0.2s; }
+        .bar-fill { background: var(--accent); height: 100%; width: 0%; transition: 0.1s linear; }
     </style>
 </head>
 <body>
 
 <div id="container">
-    <h2>Cloud AI Scanner</h2>
+    <h2>Scanner</h2>
+    
     <div id="view-window">
         <div id="webcam-container"></div>
         <img id="img-preview" src="" />
     </div>
+
+    <div id="processing-box"><div id="processing-bar"></div></div>
 
     <div class="btn-group">
         <label for="file-input" class="label-btn">Upload Image</label>
@@ -39,38 +46,46 @@
 <script id="worker-code" type="text/javascript">
     const workerLogic = () => {
         importScripts("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js");
-        importScripts("https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js");
 
         let model;
         const URL = "https://teachablemachine.withgoogle.com/models/6qiVASHGK/";
 
         async function load() {
-            model = await tmImage.load(URL + "model.json", URL + "metadata.json");
-            self.postMessage({ type: 'READY' });
+            model = await tf.loadLayersModel(URL + "model.json");
+            const response = await fetch(URL + "metadata.json");
+            const metadata = await response.json();
+            self.postMessage({ type: 'READY', labels: metadata.labels });
         }
 
         load();
 
         self.onmessage = async (e) => {
             if (e.data.type === 'PREDICT' && model) {
-                const prediction = await model.predict(e.data.bitmap);
-                self.postMessage({ type: 'RESULT', prediction });
+                tf.engine().startScope();
+                const img = tf.browser.fromPixels(e.data.bitmap).toFloat();
+                const offset = tf.scalar(127.5);
+                const normalized = img.sub(offset).div(offset);
+                const batched = normalized.reshape([1, 224, 224, 3]);
+                const prediction = await model.predict(batched).data();
+                self.postMessage({ type: 'RESULT', prediction: Array.from(prediction) });
+                tf.engine().endScope();
             }
         };
     };
 </script>
 
 <script>
-    // MAIN THREAD LOGIC
     const blob = new Blob(['(', workerLogic.toString(), ')()'], { type: 'text/javascript' });
     const worker = new Worker(window.URL.createObjectURL(blob));
     
-    let webcam, isCamActive = false;
+    let webcam, isCamActive = false, labels = [];
     const resDiv = document.getElementById("results");
+    const procBox = document.getElementById("processing-box");
 
     worker.onmessage = (e) => {
         if (e.data.type === 'READY') {
-            console.log("AI Thread Ready");
+            labels = e.data.labels;
+            document.getElementById("webcam-btn").innerText = "AI System Active";
         }
         if (e.data.type === 'RESULT') {
             updateUI(e.data.prediction);
@@ -78,56 +93,64 @@
     };
 
     async function startWebcam() {
-        webcam = new tmImage.Webcam(300, 300, true);
-        await webcam.setup();
+        webcam = document.createElement('video');
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 224, height: 224 } });
+        webcam.srcObject = stream;
         await webcam.play();
-        document.getElementById("webcam-container").appendChild(webcam.canvas);
-        document.getElementById("webcam-btn").style.display = "none";
-        isCamActive = true;
-        loop();
-    }
 
-    async function loop() {
-        if (isCamActive) {
-            webcam.update();
-            const bitmap = await createImageBitmap(webcam.canvas);
-            worker.postMessage({ type: 'PREDICT', bitmap }, [bitmap]);
-            window.requestAnimationFrame(loop);
+        const canvas = document.createElement('canvas');
+        canvas.width = 224;
+        canvas.height = 224;
+        const ctx = canvas.getContext('2d');
+
+        document.getElementById("webcam-container").appendChild(canvas);
+        document.getElementById("webcam-btn").style.display = "none";
+        procBox.style.display = "block";
+        isCamActive = true;
+
+        async function frameLoop() {
+            if (isCamActive) {
+                ctx.drawImage(webcam, 0, 0, 224, 224);
+                const bitmap = await createImageBitmap(canvas);
+                worker.postMessage({ type: 'PREDICT', bitmap }, [bitmap]);
+                requestAnimationFrame(frameLoop);
+            }
         }
+        frameLoop();
     }
 
     document.getElementById('file-input').onchange = async (e) => {
         if (e.target.files[0]) {
             isCamActive = false;
+            procBox.style.display = "block";
             const img = document.getElementById('img-preview');
             img.src = window.URL.createObjectURL(e.target.files[0]);
             img.style.display = "block";
             if (webcam) document.getElementById("reset-btn").style.display = "block";
             
             img.onload = async () => {
-                const bitmap = await createImageBitmap(img);
+                const bitmap = await createImageBitmap(img, {resizeWidth: 224, resizeHeight: 224});
                 worker.postMessage({ type: 'PREDICT', bitmap }, [bitmap]);
             };
         }
     };
 
-    function updateUI(predictions) {
+    function updateUI(preds) {
         if (resDiv.innerHTML === "") {
-            predictions.forEach(() => {
+            labels.forEach((name) => {
                 resDiv.innerHTML += `<div class="result-bar">
                     <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:bold;">
-                        <span class="name"></span><span class="percent">0%</span>
+                        <span>${name}</span><span class="p">0%</span>
                     </div>
                     <div class="bar-bg"><div class="bar-fill"></div></div>
                 </div>`;
             });
         }
         const bars = document.getElementsByClassName("result-bar");
-        predictions.forEach((p, i) => {
-            const val = (p.probability * 100).toFixed(0);
-            bars[i].querySelector(".name").innerText = p.className;
-            bars[i].querySelector(".percent").innerText = val + "%";
-            bars[i].querySelector(".bar-fill").style.width = val + "%";
+        preds.forEach((val, i) => {
+            const p = (val * 100).toFixed(0);
+            bars[i].querySelector(".p").innerText = p + "%";
+            bars[i].querySelector(".bar-fill").style.width = p + "%";
         });
     }
 
@@ -135,7 +158,7 @@
         isCamActive = true;
         document.getElementById('img-preview').style.display = "none";
         document.getElementById("reset-btn").style.display = "none";
-        loop();
+        startWebcam();
     }
 </script>
 </body>
