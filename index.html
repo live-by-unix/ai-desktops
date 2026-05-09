@@ -2,84 +2,85 @@
 <html>
 <head>
     <title>AI.exe</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #0f172a; color: white; text-align: center; padding: 20px; }
-        #container { max-width: 400px; margin: auto; background: #1e293b; padding: 20px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-        
-        #view-window { width: 300px; height: 300px; margin: 20px auto; background: #000; border-radius: 10px; overflow: hidden; border: 2px solid #334155; position: relative; }
-        #webcam-container canvas, #img-preview { width: 100%; height: 100%; object-fit: cover; position: absolute; top: 0; left: 0; }
+        body { font-family: sans-serif; background: #0f172a; color: white; text-align: center; padding: 20px; margin: 0; }
+        #container { max-width: 400px; margin: 20px auto; background: #1e293b; padding: 25px; border-radius: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        #view-window { width: 300px; height: 300px; margin: 0 auto 20px; background: #000; border-radius: 12px; overflow: hidden; position: relative; border: 2px solid #334155; }
+        canvas, #img-preview { width: 100%; height: 100%; object-fit: cover; position: absolute; top: 0; left: 0; }
         #img-preview { display: none; z-index: 10; }
-
-        .btn-group { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-top: 10px; }
-        button, .label-btn { background: #38bdf8; color: #0f172a; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 200px; display: block; }
-        #file-input { display: none; }
-        
+        .btn-group { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+        button, .label-btn { background: #38bdf8; color: #0f172a; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; transition: 0.2s; }
+        button:hover { background: #7dd3fc; }
+        input[type="file"] { display: none; }
         .result-bar { text-align: left; margin-top: 15px; }
         .bar-bg { background: #334155; height: 10px; border-radius: 5px; width: 100%; overflow: hidden; margin-top: 4px; }
-        .bar-fill { background: #38bdf8; height: 100%; width: 0%; transition: 0.3s; }
+        .bar-fill { background: #38bdf8; height: 100%; width: 0%; transition: 0.2s; }
     </style>
 </head>
 <body>
 
 <div id="container">
     <h2>Cloud AI Scanner</h2>
-
     <div id="view-window">
         <div id="webcam-container"></div>
         <img id="img-preview" src="" />
     </div>
 
     <div class="btn-group">
-      
         <label for="file-input" class="label-btn">Upload Image</label>
         <input type="file" id="file-input" accept="image/*">
-
-        <!-- Webcam Button -->
-        <button id="webcam-btn" onclick="startWebcam()">Use Webcam</button>
-        
-        <button id="reset-btn" style="display:none; background:#64748b;" onclick="backToCam()">Back to Live</button>
+        <button id="webcam-btn" onclick="startWebcam()">Use Live Webcam</button>
+        <button id="reset-btn" style="display:none; background:#64748b; color:white;" onclick="backToCam()">Back to Live</button>
     </div>
-
     <div id="results"></div>
 </div>
 
-<script>
-    const URL = "https://teachablemachine.withgoogle.com/models/6qiVASHGK/";
-    let model, webcam, max;
-    let isCamActive = false;
+<script id="worker-code" type="text/javascript">
+    const workerLogic = () => {
+        importScripts("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js");
+        importScripts("https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js");
 
-    async function loadModel() {
-        if (!model) {
+        let model;
+        const URL = "https://teachablemachine.withgoogle.com/models/6qiVASHGK/";
+
+        async function load() {
             model = await tmImage.load(URL + "model.json", URL + "metadata.json");
-            max = model.getTotalClasses();
-            setupUI();
+            self.postMessage({ type: 'READY' });
         }
-    }
 
-    function setupUI() {
-        const res = document.getElementById("results");
-        res.innerHTML = "";
-        for (let i = 0; i < max; i++) {
-            res.innerHTML += `
-                <div class="result-bar">
-                    <div style="display:flex; justify-content:space-between; font-size:12px;">
-                        <span class="name"></span><span class="percent">0%</span>
-                    </div>
-                    <div class="bar-bg"><div class="bar-fill"></div></div>
-                </div>`;
+        load();
+
+        self.onmessage = async (e) => {
+            if (e.data.type === 'PREDICT' && model) {
+                const prediction = await model.predict(e.data.bitmap);
+                self.postMessage({ type: 'RESULT', prediction });
+            }
+        };
+    };
+</script>
+
+<script>
+    // MAIN THREAD LOGIC
+    const blob = new Blob(['(', workerLogic.toString(), ')()'], { type: 'text/javascript' });
+    const worker = new Worker(window.URL.createObjectURL(blob));
+    
+    let webcam, isCamActive = false;
+    const resDiv = document.getElementById("results");
+
+    worker.onmessage = (e) => {
+        if (e.data.type === 'READY') {
+            console.log("AI Thread Ready");
         }
-    }
+        if (e.data.type === 'RESULT') {
+            updateUI(e.data.prediction);
+        }
+    };
 
     async function startWebcam() {
-        await loadModel();
-        document.getElementById("webcam-btn").innerText = "Starting...";
-        
         webcam = new tmImage.Webcam(300, 300, true);
         await webcam.setup();
         await webcam.play();
-        
         document.getElementById("webcam-container").appendChild(webcam.canvas);
         document.getElementById("webcam-btn").style.display = "none";
         isCamActive = true;
@@ -89,33 +90,46 @@
     async function loop() {
         if (isCamActive) {
             webcam.update();
-            await predict(webcam.canvas);
+            const bitmap = await createImageBitmap(webcam.canvas);
+            worker.postMessage({ type: 'PREDICT', bitmap }, [bitmap]);
             window.requestAnimationFrame(loop);
         }
     }
 
-    document.getElementById('file-input').addEventListener('change', async function(e) {
-        if (e.target.files && e.target.files[0]) {
-            await loadModel();
+    document.getElementById('file-input').onchange = async (e) => {
+        if (e.target.files[0]) {
             isCamActive = false;
+            const img = document.getElementById('img-preview');
+            img.src = window.URL.createObjectURL(e.target.files[0]);
+            img.style.display = "block";
+            if (webcam) document.getElementById("reset-btn").style.display = "block";
             
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const img = document.getElementById('img-preview');
-                img.src = event.target.result;
-                img.style.display = "block";
-                
-                if (webcam) {
-                    document.getElementById("reset-btn").style.display = "block";
-                }
-                
-                img.onload = async () => {
-                    await predict(img);
-                };
+            img.onload = async () => {
+                const bitmap = await createImageBitmap(img);
+                worker.postMessage({ type: 'PREDICT', bitmap }, [bitmap]);
             };
-            reader.readAsDataURL(e.target.files[0]);
         }
-    });
+    };
+
+    function updateUI(predictions) {
+        if (resDiv.innerHTML === "") {
+            predictions.forEach(() => {
+                resDiv.innerHTML += `<div class="result-bar">
+                    <div style="display:flex; justify-content:space-between; font-size:12px; font-weight:bold;">
+                        <span class="name"></span><span class="percent">0%</span>
+                    </div>
+                    <div class="bar-bg"><div class="bar-fill"></div></div>
+                </div>`;
+            });
+        }
+        const bars = document.getElementsByClassName("result-bar");
+        predictions.forEach((p, i) => {
+            const val = (p.probability * 100).toFixed(0);
+            bars[i].querySelector(".name").innerText = p.className;
+            bars[i].querySelector(".percent").innerText = val + "%";
+            bars[i].querySelector(".bar-fill").style.width = val + "%";
+        });
+    }
 
     function backToCam() {
         isCamActive = true;
@@ -123,18 +137,6 @@
         document.getElementById("reset-btn").style.display = "none";
         loop();
     }
-
-    async function predict(source) {
-        const prediction = await model.predict(source);
-        const bars = document.getElementsByClassName("result-bar");
-        for (let i = 0; i < max; i++) {
-            const p = (prediction[i].probability * 100).toFixed(0);
-            bars[i].querySelector(".name").innerText = prediction[i].className;
-            bars[i].querySelector(".percent").innerText = p + "%";
-            bars[i].querySelector(".bar-fill").style.width = p + "%";
-        }
-    }
 </script>
-
 </body>
 </html>
