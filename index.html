@@ -1,120 +1,140 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI.exe</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --accent: #38bdf8; --text: #f1f5f9; }
-        body { font-family: sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        .container { background: var(--card); padding: 2rem; border-radius: 24px; text-align: center; width: 100%; max-width: 450px; }
-        #display-box { position: relative; border-radius: 16px; overflow: hidden; margin: 20px auto; background: #000; width: 300px; height: 300px; }
-        canvas, #img-preview { width: 100% !important; height: 100% !important; object-fit: cover; }
-        #img-preview { display: none; }
-        .btns { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
-        button, .upload-btn { background: var(--accent); color: var(--bg); border: none; padding: 10px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; }
-        input[type="file"] { display: none; }
-        .label-row { margin-bottom: 12px; text-align: left; }
-        .info { display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px; font-weight: bold; }
-        .bar-bg { background: #334155; border-radius: 10px; height: 10px; width: 100%; overflow: hidden; }
-        .bar-fill { background: var(--accent); height: 100%; width: 0%; transition: width 0.2s; }
+        body { font-family: sans-serif; background: #0f172a; color: white; text-align: center; padding: 20px; }
+        #container { max-width: 400px; margin: auto; background: #1e293b; padding: 20px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        
+        #view-window { width: 300px; height: 300px; margin: 20px auto; background: #000; border-radius: 10px; overflow: hidden; border: 2px solid #334155; position: relative; }
+        #webcam-container canvas, #img-preview { width: 100%; height: 100%; object-fit: cover; position: absolute; top: 0; left: 0; }
+        #img-preview { display: none; z-index: 10; }
+
+        .btn-group { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-top: 10px; }
+        button, .label-btn { background: #38bdf8; color: #0f172a; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 200px; display: block; }
+        #file-input { display: none; }
+        
+        .result-bar { text-align: left; margin-top: 15px; }
+        .bar-bg { background: #334155; height: 10px; border-radius: 5px; width: 100%; overflow: hidden; margin-top: 4px; }
+        .bar-fill { background: #38bdf8; height: 100%; width: 0%; transition: 0.3s; }
     </style>
 </head>
 <body>
 
-    <div class="container">
-        <h2>AI Cloud Identifier</h2>
-        <div id="display-box">
-            <div id="webcam-box"></div>
-            <img id="img-preview" src="#" />
-        </div>
-        <div class="btns">
-            <button id="go-btn" onclick="init()">Start AI</button>
-            <label class="upload-btn" id="up-lbl" style="display:none;">
-                Upload
-                <input type="file" accept="image/*" onchange="useImage(this)">
-            </label>
-            <button id="reset" style="display:none; background:#64748b; color:#fff" onclick="useCam()">Live</button>
-        </div>
-        <div id="results"></div>
+<div id="container">
+    <h2>Cloud AI Scanner</h2>
+
+    <div id="view-window">
+        <div id="webcam-container"></div>
+        <img id="img-preview" src="" />
     </div>
 
-    <script>
-        const URL = "https://teachablemachine.withgoogle.com/models/6qiVASHGK/";
-        let model, webcam, results, max;
-        let active = false;
+    <div class="btn-group">
+      
+        <label for="file-input" class="label-btn">Upload Image</label>
+        <input type="file" id="file-input" accept="image/*">
 
-        async function init() {
-            document.getElementById('go-btn').innerText = "...";
+        <!-- Webcam Button -->
+        <button id="webcam-btn" onclick="startWebcam()">Use Webcam</button>
+        
+        <button id="reset-btn" style="display:none; background:#64748b;" onclick="backToCam()">Back to Live</button>
+    </div>
+
+    <div id="results"></div>
+</div>
+
+<script>
+    const URL = "https://teachablemachine.withgoogle.com/models/6qiVASHGK/";
+    let model, webcam, max;
+    let isCamActive = false;
+
+    async function loadModel() {
+        if (!model) {
             model = await tmImage.load(URL + "model.json", URL + "metadata.json");
             max = model.getTotalClasses();
-            webcam = new tmImage.Webcam(300, 300, true); 
-            await webcam.setup(); 
-            await webcam.play();
-            active = true;
-            document.getElementById("webcam-box").appendChild(webcam.canvas);
-            document.getElementById('go-btn').style.display = 'none';
-            document.getElementById('up-lbl').style.display = 'block';
-            buildUI();
-            loop();
+            setupUI();
         }
+    }
 
-        function buildUI() {
-            results = document.getElementById("results");
-            results.innerHTML = "";
-            for (let i = 0; i < max; i++) {
-                results.innerHTML += `
-                    <div class="label-row">
-                        <div class="info"><span class="n"></span><span class="p">0%</span></div>
-                        <div class="bar-bg"><div class="bar-fill"></div></div>
-                    </div>`;
-            }
+    function setupUI() {
+        const res = document.getElementById("results");
+        res.innerHTML = "";
+        for (let i = 0; i < max; i++) {
+            res.innerHTML += `
+                <div class="result-bar">
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span class="name"></span><span class="percent">0%</span>
+                    </div>
+                    <div class="bar-bg"><div class="bar-fill"></div></div>
+                </div>`;
         }
+    }
 
-        async function loop() {
-            if(active) {
-                webcam.update(); 
-                await run(webcam.canvas);
-                window.requestAnimationFrame(loop);
-            }
+    async function startWebcam() {
+        await loadModel();
+        document.getElementById("webcam-btn").innerText = "Starting...";
+        
+        webcam = new tmImage.Webcam(300, 300, true);
+        await webcam.setup();
+        await webcam.play();
+        
+        document.getElementById("webcam-container").appendChild(webcam.canvas);
+        document.getElementById("webcam-btn").style.display = "none";
+        isCamActive = true;
+        loop();
+    }
+
+    async function loop() {
+        if (isCamActive) {
+            webcam.update();
+            await predict(webcam.canvas);
+            window.requestAnimationFrame(loop);
         }
+    }
 
-        async function useImage(input) {
-            if (input.files && input.files[0]) {
-                active = false;
-                const reader = new FileReader();
-                reader.onload = e => {
-                    const el = document.getElementById('img-preview');
-                    el.src = e.target.result;
-                    el.style.display = 'block';
-                    document.getElementById('webcam-box').style.display = 'none';
-                    document.getElementById('reset').style.display = 'block';
-                    el.onload = () => run(el);
+    document.getElementById('file-input').addEventListener('change', async function(e) {
+        if (e.target.files && e.target.files[0]) {
+            await loadModel();
+            isCamActive = false;
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = document.getElementById('img-preview');
+                img.src = event.target.result;
+                img.style.display = "block";
+                
+                if (webcam) {
+                    document.getElementById("reset-btn").style.display = "block";
+                }
+                
+                img.onload = async () => {
+                    await predict(img);
                 };
-                reader.readAsDataURL(input.files[0]);
-            }
+            };
+            reader.readAsDataURL(e.target.files[0]);
         }
+    });
 
-        function useCam() {
-            active = true;
-            document.getElementById('img-preview').style.display = 'none';
-            document.getElementById('webcam-box').style.display = 'block';
-            document.getElementById('reset').style.display = 'none';
-            loop();
-        }
+    function backToCam() {
+        isCamActive = true;
+        document.getElementById('img-preview').style.display = "none";
+        document.getElementById("reset-btn").style.display = "none";
+        loop();
+    }
 
-        async function run(src) {
-            const pred = await model.predict(src);
-            const rows = results.getElementsByClassName("label-row");
-            for (let i = 0; i < max; i++) {
-                const pct = (pred[i].probability * 100).toFixed(0) + "%";
-                rows[i].querySelector(".n").innerText = pred[i].className;
-                rows[i].querySelector(".p").innerText = pct;
-                rows[i].querySelector(".bar-fill").style.width = pct;
-            }
+    async function predict(source) {
+        const prediction = await model.predict(source);
+        const bars = document.getElementsByClassName("result-bar");
+        for (let i = 0; i < max; i++) {
+            const p = (prediction[i].probability * 100).toFixed(0);
+            bars[i].querySelector(".name").innerText = prediction[i].className;
+            bars[i].querySelector(".percent").innerText = p + "%";
+            bars[i].querySelector(".bar-fill").style.width = p + "%";
         }
-    </script>
+    }
+</script>
+
 </body>
 </html>
